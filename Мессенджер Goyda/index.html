@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Мессенджер + Звонки + ГС</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #0a0e17; font-family: 'Segoe UI', sans-serif; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        #app { width: 480px; background: #1a1a2e; border-radius: 16px; border: 1px solid #ff6600; padding: 20px; box-shadow: 0 0 40px rgba(255, 102, 0, 0.1); max-height: 98vh; overflow-y: auto; }
+        #status { font-size: 12px; color: #888; margin-bottom: 10px; }
+        #idDisplay { color: #ffaa00; }
+        #connectArea { display: flex; gap: 10px; margin-bottom: 10px; }
+        #connectArea input { flex: 1; padding: 10px; border-radius: 8px; border: none; background: #222; color: #fff; }
+        #connectArea button { padding: 10px 20px; border-radius: 8px; border: none; background: #00ff88; color: #000; font-weight: bold; cursor: pointer; }
+        #messages { height: 300px; overflow-y: auto; margin-bottom: 10px; padding: 10px; background: #111; border-radius: 8px; display: flex; flex-direction: column; gap: 6px; }
+        .msg { padding: 6px 12px; border-radius: 12px; max-width: 80%; word-wrap: break-word; }
+        .msg.you { align-self: flex-end; background: #ff6600; color: #fff; }
+        .msg.friend { align-self: flex-start; background: #333; color: #fff; }
+        .msg.voice { align-self: flex-start; background: #444; color: #fff; font-style: italic; }
+        .msg.voice.you { align-self: flex-end; background: #ff6600; }
+        #inputArea { display: flex; gap: 10px; }
+        #inputArea input { flex: 1; padding: 10px; border-radius: 8px; border: none; background: #222; color: #fff; }
+        #inputArea button { padding: 10px 20px; border-radius: 8px; border: none; background: #ff6600; color: #fff; font-weight: bold; cursor: pointer; }
+        #callArea { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+        #callArea button { flex: 1; padding: 10px; border-radius: 8px; border: none; font-weight: bold; cursor: pointer; }
+        .call-btn { background: #00aaff; color: #fff; }
+        .call-btn.active { background: #ff4444; }
+        .voice-msg-btn { background: #aa66ff; color: #fff; }
+        .voice-msg-btn.active { background: #ff4444; }
+        #videoContainer { display: none; margin-top: 10px; }
+        #videoContainer video { width: 100%; border-radius: 8px; background: #000; }
+        .video-small { position: fixed; bottom: 20px; right: 20px; width: 150px; border: 2px solid #ff6600; border-radius: 8px; z-index: 999; }
+        #voiceMsgStatus { font-size: 12px; color: #ffaa00; margin-top: 4px; }
+        audio { width: 100%; margin-top: 4px; border-radius: 8px; }
+    </style>
+</head>
+<body>
+<div id="app">
+    <h2 style="text-align:center; color:#ff6600;">💬 Мессенджер</h2>
+    <div id="status">Ваш ID: <span id="idDisplay">...</span></div>
+    <div id="connectArea">
+        <input type="text" id="friendId" placeholder="Введи ID друга">
+        <button id="connectBtn">Подключиться</button>
+    </div>
+    <div id="messages"></div>
+    <div id="inputArea">
+        <input type="text" id="msgInput" placeholder="Введите сообщение...">
+        <button id="sendBtn">Отправить</button>
+    </div>
+    <div id="voiceMsgStatus"></div>
+    <div id="callArea">
+        <button id="voiceCallBtn" class="call-btn">🎙 Голос</button>
+        <button id="videoCallBtn" class="call-btn">📹 Видео</button>
+        <button id="voiceMsgBtn" class="voice-msg-btn">🎤 ГС</button>
+        <button id="hangupBtn" class="call-btn" style="background:#ff4444; display:none;">❌ Сбросить</button>
+    </div>
+    <div id="videoContainer">
+        <video id="remoteVideo" autoplay></video>
+        <video id="localVideo" autoplay muted></video>
+    </div>
+</div>
+<script>
+const peer = new Peer();
+let conn = null;
+let isConnected = false;
+let call = null;
+let mediaStream = null;
+let mediaRecorder = null;
+let audioChunks = [];
+let isRecording = false;
+const messages = document.getElementById('messages');
+const msgInput = document.getElementById('msgInput');
+const idDisplay = document.getElementById('idDisplay');
+const voiceMsgStatus = document.getElementById('voiceMsgStatus');
+
+// --- ПОДКЛЮЧЕНИЕ ---
+peer.on('open', (id) => {
+    idDisplay.textContent = id;
+});
+
+document.getElementById('connectBtn').addEventListener('click', () => {
+    const friendId = document.getElementById('friendId').value.trim();
+    if (!friendId) return alert('Введите ID друга');
+    conn = peer.connect(friendId);
+    conn.on('open', () => {
+        isConnected = true;
+        document.getElementById('status').innerHTML = '✅ Подключено!';
+        addMessage('system', 'Соединение установлено');
+    });
+    conn.on('data', (data) => {
+        if (data.type === 'voice') {
+            addVoiceMessage('friend', data.url);
+        } else {
+            addMessage('friend', data);
+        }
+    });
+});
+
+// --- СООБЩЕНИЯ ---
+document.getElementById('sendBtn').addEventListener('click', sendMessage);
+msgInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendMessage();
+});
+
+function sendMessage() {
+    const text = msgInput.value.trim();
+    if (!text || !isConnected) return;
+    conn.send(text);
+    addMessage('you', text);
+    msgInput.value = '';
+}
+
+function addMessage(type, text) {
+    const div = document.createElement('div');
+    div.className = `msg ${type}`;
+    div.textContent = text;
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
+}
+
+// --- ГОЛОСОВЫЕ СООБЩЕНИЯ ---
+document.getElementById('voiceMsgBtn').addEventListener('mousedown', startRecording);
+document.getElementById('voiceMsgBtn').addEventListener('mouseup', stopRecording);
+document.getElementById('voiceMsgBtn').addEventListener('touchstart', (e) => { e.preventDefault(); startRecording(); });
+document.getElementById('voiceMsgBtn').addEventListener('touchend', (e) => { e.preventDefault(); stopRecording(); });
+
+function startRecording() {
+    if (!isConnected) return alert('Сначала подключись к другу');
+    navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+            mediaRecorder = new MediaRecorder(stream);
+            audioChunks = [];
+            mediaRecorder.ondataavailable = (event) => {
+                audioChunks.push(event.data);
+            };
+            mediaRecorder.onstop = () => {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                const audioUrl = URL.createObjectURL(audioBlob);
+                // Отправляем другу
+                conn.send({ type: 'voice', url: audioUrl });
+                addVoiceMessage('you', audioUrl);
+                document.getElementById('voiceMsgBtn').classList.remove('active');
+                voiceMsgStatus.textContent = '✅ ГС отправлено';
+                setTimeout(() => voiceMsgStatus.textContent = '', 2000);
+                stream.getTracks().forEach(t => t.stop());
+            };
+            mediaRecorder.start();
+            isRecording = true;
+            document.getElementById('voiceMsgBtn').classList.add('active');
+            voiceMsgStatus.textContent = '🎤 Запись... Отпусти для отправки';
+        })
+        .catch(e => {
+            alert('Ошибка доступа к микрофону: ' + e.message);
+        });
+}
+
+function stopRecording() {
+    if (mediaRecorder && isRecording) {
+        mediaRecorder.stop();
+        isRecording = false;
+        voiceMsgStatus.textContent = '⏳ Обработка...';
+    }
+}
+
+function addVoiceMessage(type, url) {
+    const div = document.createElement('div');
+    div.className = `msg voice ${type}`;
+    const audio = document.createElement('audio');
+    audio.controls = true;
+    audio.src = url;
+    div.appendChild(audio);
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
+}
+
+// --- ЗВОНКИ ---
+document.getElementById('voiceCallBtn').addEventListener('click', () => startCall(false));
+document.getElementById('videoCallBtn').addEventListener('click', () => startCall(true));
+document.getElementById('hangupBtn').addEventListener('click', hangup);
+
+async function startCall(video) {
+    if (!isConnected) return alert('Сначала подключись к другу');
+    try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: video
+        });
+        document.getElementById('localVideo').srcObject = mediaStream;
+        if (video) {
+            document.getElementById('videoContainer').style.display = 'block';
+            document.getElementById('localVideo').style.display = 'block';
+        }
+        call = peer.call(conn.peer, mediaStream);
+        call.on('stream', (remoteStream) => {
+            document.getElementById('remoteVideo').srcObject = remoteStream;
+            if (video) {
+                document.getElementById('videoContainer').style.display = 'block';
+            }
+        });
+        document.getElementById('hangupBtn').style.display = 'inline-block';
+        document.getElementById('voiceCallBtn').style.display = 'none';
+        document.getElementById('videoCallBtn').style.display = 'none';
+    } catch(e) {
+        alert('Ошибка доступа к микрофону/камере: ' + e.message);
+    }
+}
+
+function hangup() {
+    if (call) call.close();
+    if (mediaStream) {
+        mediaStream.getTracks().forEach(t => t.stop());
+        mediaStream = null;
+    }
+    document.getElementById('remoteVideo').srcObject = null;
+    document.getElementById('localVideo').srcObject = null;
+    document.getElementById('videoContainer').style.display = 'none';
+    document.getElementById('hangupBtn').style.display = 'none';
+    document.getElementById('voiceCallBtn').style.display = 'inline-block';
+    document.getElementById('videoCallBtn').style.display = 'inline-block';
+}
+
+// --- ПРИЁМ ЗВОНКОВ ---
+peer.on('call', (incoming) => {
+    if (confirm('Входящий звонок! Ответить?')) {
+        navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+            .then(stream => {
+                mediaStream = stream;
+                document.getElementById('localVideo').srcObject = stream;
+                incoming.answer(stream);
+                call = incoming;
+                call.on('stream', (remoteStream) => {
+                    document.getElementById('remoteVideo').srcObject = remoteStream;
+                });
+                document.getElementById('hangupBtn').style.display = 'inline-block';
+                document.getElementById('voiceCallBtn').style.display = 'none';
+                document.getElementById('videoCallBtn').style.display = 'none';
+            })
+            .catch(e => alert('Ошибка: ' + e.message));
+    } else {
+        incoming.close();
+    }
+});
+
+// --- ПРИЁМ СОЕДИНЕНИЙ ---
+peer.on('connection', (incoming) => {
+    conn = incoming;
+    conn.on('open', () => {
+        isConnected = true;
+        document.getElementById('status').innerHTML = '✅ Подключено!';
+        addMessage('system', 'Кто-то подключился');
+    });
+    conn.on('data', (data) => {
+        if (data.type === 'voice') {
+            addVoiceMessage('friend', data.url);
+        } else {
+            addMessage('friend', data);
+        }
+    });
+});
+</script>
+</body>
+</html>
